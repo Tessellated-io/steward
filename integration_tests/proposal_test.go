@@ -39,7 +39,8 @@ func (s *IntegrationTestSuite) TestScheduledCorkProposal() {
 		}
 	}
 	`
-	targetBlockHeight := currentHeight + 120
+
+	targetBlockHeight := currentHeight + 90
 	proposal := corktypes.NewScheduledCorkProposal(
 		"scheduled cork proposal test",
 		"description",
@@ -88,13 +89,15 @@ func (s *IntegrationTestSuite) TestScheduledCorkProposal() {
 	}, time.Second*30, time.Second*5, "proposal submission was never found")
 
 	s.T().Log("Vote for proposal")
+	// wait so the client for val0 will be aware of the latest tx sequence
+	time.Sleep(time.Second * 10)
 	for _, val := range s.chain.validators {
 		kr, err := val.keyring()
 		s.Require().NoError(err)
 		localClientCtx, err := s.chain.clientContext("tcp://localhost:26657", &kr, "val", val.keyInfo.GetAddress())
 		s.Require().NoError(err)
 
-		voteMsg := govtypes.NewMsgVote(val.keyInfo.GetAddress(), 1, govtypes.OptionYes)
+		voteMsg := govtypes.NewMsgVote(val.keyInfo.GetAddress(), proposalID, govtypes.OptionYes)
 		voteResponse, err := s.chain.sendMsgs(*localClientCtx, voteMsg)
 		s.Require().NoError(err)
 		s.Require().Zero(voteResponse.Code, "Vote error: %s", voteResponse.RawLog)
@@ -117,7 +120,10 @@ func (s *IntegrationTestSuite) TestScheduledCorkProposal() {
 	s.T().Log("wait for scheduled height")
 	s.Require().Eventuallyf(func() bool {
 		currentHeight, err := s.GetLatestBlockHeight(orchClientCtx)
-		s.Require().NoError(err)
+		if err != nil {
+			s.T().Logf("error quering latest height (probably transient): %s", err)
+			return false
+		}
 		if currentHeight >= targetBlockHeight {
 			return true
 		} else {
@@ -133,7 +139,7 @@ func (s *IntegrationTestSuite) TestScheduledCorkProposal() {
 		}
 
 		return false
-	}, 3*time.Minute, 1*time.Second, "never reached scheduled height")
+	}, 3*time.Minute, 10*time.Second, "never reached scheduled height")
 
 	s.T().Logf("checking for cellar event")
 	s.Require().Eventuallyf(func() bool {
