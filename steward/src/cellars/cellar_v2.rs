@@ -21,7 +21,7 @@ use StrategyFunction::*;
 
 use crate::utils::{encode_oracle_swap_params, encode_swap_params};
 use crate::{
-    error::Error,
+    error::{Error, ErrorKind},
     utils::{
         convert_exchange, sp_call_error, sp_call_parse_address, string_to_u128, string_to_u256,
     },
@@ -31,10 +31,36 @@ use super::{log_cellar_call, log_governance_cellar_call};
 
 const CELLAR_NAME: &str = "CellarV2";
 
+// adaptors and positions associated with the deprecated UniV3 adaptor are blocked
+// addresses treated as lowercase without 0x prefix to ensure valid comparisons with arbitrary input
+const BLOCKED_ADAPTORS: [&str; 1] = ["7c4262f83e6775d6ff6fe8d9ab268611ed9d13ee"];
+const BLOCKED_POSITIONS: [u32; 2] = [4, 5];
+
+// since a string prefixed with or without 0x is parsable, ensure the string comparison is valid
+pub fn normalize_address(address: String) -> String {
+    let lowercase_address = address.to_lowercase();
+    return address
+        .to_lowercase()
+        .strip_prefix("0x")
+        .unwrap_or(&lowercase_address)
+        .to_string();
+}
+
 pub fn get_encoded_call(function: StrategyFunction, cellar_id: String) -> Result<Vec<u8>, Error> {
+    get_call(function, cellar_id).map(|call| call.encode())
+}
+
+pub fn get_call(function: StrategyFunction, cellar_id: String) -> Result<CellarV2Calls, Error> {
     match function {
         AddPosition(params) => {
+            if BLOCKED_POSITIONS.contains(&params.position_id) {
+                return Err(ErrorKind::SPCallError
+                    .context(format!("position is blocked: {}", params.position_id))
+                    .into());
+            }
+
             log_cellar_call(CELLAR_NAME, &AddPositionCall::function_name(), &cellar_id);
+
             let call = AddPositionCall {
                 index: params.index,
                 position_id: params.position_id,
@@ -42,15 +68,24 @@ pub fn get_encoded_call(function: StrategyFunction, cellar_id: String) -> Result
                 in_debt_array: params.in_debt_array,
             };
 
-            Ok(CellarV2Calls::AddPosition(call).encode())
+            Ok(CellarV2Calls::AddPosition(call))
         }
         CallOnAdaptor(params) => {
+            for adaptor_call in params.data.clone() {
+                let adaptor_address = normalize_address(adaptor_call.adaptor.clone());
+                if BLOCKED_ADAPTORS.contains(&adaptor_address.as_str()) {
+                    return Err(ErrorKind::SPCallError
+                        .context(format!("adaptor is blocked: {}", adaptor_call.adaptor))
+                        .into());
+                }
+            }
+
             log_cellar_call(CELLAR_NAME, &CallOnAdaptorCall::function_name(), &cellar_id);
             let call = CallOnAdaptorCall {
                 data: get_encoded_adaptor_call(params.data)?,
             };
 
-            Ok(CellarV2Calls::CallOnAdaptor(call).encode())
+            Ok(CellarV2Calls::CallOnAdaptor(call))
         }
         RemovePosition(params) => {
             log_cellar_call(
@@ -63,7 +98,7 @@ pub fn get_encoded_call(function: StrategyFunction, cellar_id: String) -> Result
                 in_debt_array: params.in_debt_array,
             };
 
-            Ok(CellarV2Calls::RemovePosition(call).encode())
+            Ok(CellarV2Calls::RemovePosition(call))
         }
         SetHoldingPosition(params) => {
             log_cellar_call(
@@ -75,7 +110,7 @@ pub fn get_encoded_call(function: StrategyFunction, cellar_id: String) -> Result
                 position_id: params.position_id,
             };
 
-            Ok(CellarV2Calls::SetHoldingPosition(call).encode())
+            Ok(CellarV2Calls::SetHoldingPosition(call))
         }
         SetStrategistPayoutAddress(params) => {
             log_cellar_call(
@@ -87,7 +122,7 @@ pub fn get_encoded_call(function: StrategyFunction, cellar_id: String) -> Result
                 payout: sp_call_parse_address(params.payout)?,
             };
 
-            Ok(CellarV2Calls::SetStrategistPayoutAddress(call).encode())
+            Ok(CellarV2Calls::SetStrategistPayoutAddress(call))
         }
         SwapPositions(params) => {
             log_cellar_call(CELLAR_NAME, &SwapPositionsCall::function_name(), &cellar_id);
@@ -97,7 +132,7 @@ pub fn get_encoded_call(function: StrategyFunction, cellar_id: String) -> Result
                 in_debt_array: params.in_debt_array,
             };
 
-            Ok(CellarV2Calls::SwapPositions(call).encode())
+            Ok(CellarV2Calls::SwapPositions(call))
         }
         SetShareLockPeriod(params) => {
             log_cellar_call(
@@ -109,9 +144,8 @@ pub fn get_encoded_call(function: StrategyFunction, cellar_id: String) -> Result
                 new_lock: string_to_u256(params.new_lock)?,
             };
 
-            Ok(CellarV2Calls::SetShareLockPeriod(call).encode())
+            Ok(CellarV2Calls::SetShareLockPeriod(call))
         }
-
         // This will ultimately need to be a governance function, but for Seven Sea's live testing we are keeping
         // it here until they get a feel for what an appropriate value is.
         SetRebalanceDeviation(params) => {
@@ -124,7 +158,7 @@ pub fn get_encoded_call(function: StrategyFunction, cellar_id: String) -> Result
                 new_deviation: string_to_u256(params.new_deviation)?,
             };
 
-            Ok(CellarV2Calls::SetRebalanceDeviation(call).encode())
+            Ok(CellarV2Calls::SetRebalanceDeviation(call))
         }
     }
 }
@@ -226,7 +260,7 @@ fn get_encoded_adaptor_call(data: Vec<AdaptorCall>) -> Result<Vec<AbiAdaptorCall
                         }
                         uniswap_v3_adaptor::Function::ClosePosition(p) => {
                             let call = steward_abi::uniswap_v3_adaptor::ClosePositionCall {
-                                position_id: string_to_u256(p.position_id)?,
+                                token_id: string_to_u256(p.token_id)?,
                                 min_0: string_to_u256(p.min_0)?,
                                 min_1: string_to_u256(p.min_1)?,
                             };
@@ -234,7 +268,7 @@ fn get_encoded_adaptor_call(data: Vec<AdaptorCall>) -> Result<Vec<AbiAdaptorCall
                         }
                         uniswap_v3_adaptor::Function::AddToPosition(p) => {
                             let call = steward_abi::uniswap_v3_adaptor::AddToPositionCall {
-                                position_id: string_to_u256(p.position_id)?,
+                                token_id: string_to_u256(p.token_id)?,
                                 amount_0: string_to_u256(p.amount_0)?,
                                 amount_1: string_to_u256(p.amount_1)?,
                                 min_0: string_to_u256(p.min_0)?,
@@ -244,11 +278,11 @@ fn get_encoded_adaptor_call(data: Vec<AdaptorCall>) -> Result<Vec<AbiAdaptorCall
                         }
                         uniswap_v3_adaptor::Function::TakeFromPosition(p) => {
                             let call = steward_abi::uniswap_v3_adaptor::TakeFromPositionCall {
-                                position_id: string_to_u256(p.position_id)?,
+                                token_id: string_to_u256(p.token_id)?,
                                 liquidity: string_to_u128(p.liquidity)?.as_u128(),
                                 min_0: string_to_u256(p.min_0)?,
                                 min_1: string_to_u256(p.min_1)?,
-                                collect_fees: p.collect_fees,
+                                take_fees: p.take_fees,
                             };
                             calls.push(
                                 UniswapV3AdaptorCalls::TakeFromPosition(call)
@@ -297,11 +331,44 @@ fn get_encoded_adaptor_call(data: Vec<AdaptorCall>) -> Result<Vec<AbiAdaptorCall
                         }
                         uniswap_v3_adaptor::Function::CollectFees(p) => {
                             let call = steward_abi::uniswap_v3_adaptor::CollectFeesCall {
-                                position_id: string_to_u256(p.position_id)?,
+                                token_id: string_to_u256(p.token_id)?,
                                 amount_0: string_to_u128(p.amount_0)?.as_u128(),
                                 amount_1: string_to_u128(p.amount_1)?.as_u128(),
                             };
                             calls.push(UniswapV3AdaptorCalls::CollectFees(call).encode().into())
+                        }
+                        uniswap_v3_adaptor::Function::PurgeAllZeroLiquidityPositions(p) => {
+                            let call = steward_abi::uniswap_v3_adaptor::PurgeAllZeroLiquidityPositionsCall {
+                                token_0: sp_call_parse_address(p.token_0)?,
+                                token_1: sp_call_parse_address(p.token_1)?,
+                            };
+                            calls.push(
+                                UniswapV3AdaptorCalls::PurgeAllZeroLiquidityPositions(call)
+                                    .encode()
+                                    .into(),
+                            )
+                        }
+                        uniswap_v3_adaptor::Function::PurgeSinglePosition(p) => {
+                            let call = steward_abi::uniswap_v3_adaptor::PurgeSinglePositionCall {
+                                token_id: string_to_u256(p.token_id)?,
+                            };
+                            calls.push(
+                                UniswapV3AdaptorCalls::PurgeSinglePosition(call)
+                                    .encode()
+                                    .into(),
+                            )
+                        }
+                        uniswap_v3_adaptor::Function::RemoveUnownedPositionFromTracker(p) => {
+                            let call = steward_abi::uniswap_v3_adaptor::RemoveUnOwnedPositionFromTrackerCall {
+                                token_id: string_to_u256(p.token_id)?,
+                                token_0: sp_call_parse_address(p.token_0)?,
+                                token_1: sp_call_parse_address(p.token_1)?,
+                            };
+                            calls.push(
+                                UniswapV3AdaptorCalls::RemoveUnOwnedPositionFromTracker(call)
+                                    .encode()
+                                    .into(),
+                            )
                         }
                     }
                 }
@@ -677,4 +744,19 @@ fn get_encoded_adaptor_call(data: Vec<AdaptorCall>) -> Result<Vec<AbiAdaptorCall
     }
 
     Ok(result)
+}
+
+#[test]
+fn test_address_normalization() {
+    let blocked1 = String::from("0x7C4262f83e6775D6ff6fE8d9ab268611Ed9d13Ee");
+    let blocked2 = String::from("0X7c4262f83e6775d6ff6fe8d9ab268611ed9d13ee");
+    let blocked3 = String::from("7C4262f83e6775D6ff6fE8d9ab268611Ed9d13Ee");
+    let blocked4 = String::from("7c4262f83e6775d6ff6fe8d9ab268611ed9d13ee");
+    let nonblocked = String::from("0xDbd750F72a00d01f209FFc6C75e80301eFc789C1");
+
+    assert!(BLOCKED_ADAPTORS.contains(&normalize_address(blocked1.clone()).as_str()));
+    assert!(BLOCKED_ADAPTORS.contains(&normalize_address(blocked2).as_str()));
+    assert!(BLOCKED_ADAPTORS.contains(&normalize_address(blocked3).as_str()));
+    assert!(BLOCKED_ADAPTORS.contains(&normalize_address(blocked4).as_str()));
+    assert!(!BLOCKED_ADAPTORS.contains(&normalize_address(nonblocked.clone()).as_str()));
 }

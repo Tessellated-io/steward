@@ -55,6 +55,7 @@ openssl = { version = "=0.10.45", features = ["vendored"] }
 openssl-sys = "=0.9.80"
 openssl-probe = "0.1.5"
 once_cell = "1.10.0"
+reqwest = "0.11.14"
 
 
 [dependencies.abscissa_core]

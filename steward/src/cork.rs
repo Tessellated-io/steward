@@ -15,12 +15,16 @@ use abscissa_core::{
 use deep_space::{Coin, Contact};
 use ethers::types::H160;
 use gravity_bridge::gravity_proto::cosmos_sdk_proto::cosmos::base::abci::v1beta1::TxResponse;
+use lazy_static::lazy_static;
 use sha3::{Digest, Keccak256};
 use somm_proto::cork::Cork;
 use std::time::Duration;
 use steward_proto::{
     self,
-    steward::{self, schedule_request::CallData::*, ScheduleRequest, ScheduleResponse},
+    steward::{
+        self, schedule_request::CallData::*, ScheduleRequest, ScheduleResponse, StatusRequest,
+        StatusResponse,
+    },
 };
 use tonic::{self, async_trait, Code, Request, Response, Status};
 
@@ -30,6 +34,10 @@ pub mod proposals;
 
 const MESSAGE_TIMEOUT: Duration = Duration::from_secs(10);
 const CHAIN_PREFIX: &str = "somm";
+
+lazy_static! {
+    static ref STEWARD_VERSION: &'static str = env!("CARGO_PKG_VERSION");
+}
 
 pub struct CorkHandler;
 
@@ -79,9 +87,15 @@ impl steward::contract_call_server::ContractCall for CorkHandler {
             id: id_hash(height, &cellar_id, encoded_call),
         }))
     }
+
+    async fn status(&self, _: Request<StatusRequest>) -> Result<Response<StatusResponse>, Status> {
+        Ok(Response::new(StatusResponse {
+            version: STEWARD_VERSION.to_string(),
+        }))
+    }
 }
 
-fn get_encoded_call(request: ScheduleRequest) -> Result<Vec<u8>, Error> {
+pub fn get_encoded_call(request: ScheduleRequest) -> Result<Vec<u8>, Error> {
     if request.call_data.is_none() {
         return Err(ErrorKind::Http.context("empty contract call data").into());
     }
